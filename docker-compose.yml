@@ -11,7 +11,7 @@ services:
     container_name: python_sim_core
     # Ports are mapped for debugging, but only the node service uses the internal 5000
     ports:
-      - "5000:5000" 
+      - "5001:5001" 
     restart: always
     networks:
       - sentinode_net
