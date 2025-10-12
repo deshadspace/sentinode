@@ -1,0 +1,15 @@
+# Web Service (FastAPI) Dependencies
+fastapi
+uvicorn
+
+# Core Scientific & Simulation Dependencies
+numpy==1.26.4
+scipy
+pandas
+astropy
+git+https://github.com/poliastro/poliastro.git
+torch
+sgp4
+tabulate
+matplotlib
+json5

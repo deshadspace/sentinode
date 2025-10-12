@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sentinode X Telemetry Dashboard</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0d1117; /* Dark background */
+        }
+        .tab-button.active {
+            border-bottom-width: 3px;
+            border-color: #2563eb; /* Blue 600 */
+            color: #ffffff;
+        }
+        .metric-card {
+            min-height: 120px;
+        }
+        .stat-value {
+            font-size: 2.25rem; /* text-4xl */
+            font-weight: 700; /* font-bold */
+        }
+        .text-unit {
+            font-size: 0.875rem; /* text-sm */
+            color: #9ca3af; /* gray 400 */
+        }
+        /* Custom scrollbar for log area */
+        #log-area::-webkit-scrollbar {
+            width: 8px;
+        }
+        #log-area::-webkit-scrollbar-thumb {
+            background: #374151;
+            border-radius: 4px;
+        }
+        .log-entry-mono {
+            /* Monospace font for console feel */
+            font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+            line-height: 1.3;
+            white-space: pre; /* Essential for maintaining manual spacing and padding */
+        }
+    </style>
+    <script>
+        // --- Global State and Constants ---
+        const API_BASE_URL = 'http://localhost:3001/api';
+        const DEFAULT_REALTIME_DURATION_S = 60; 
+        let telemetryData = [];
+        let simulationInterval = null;
+        let currentStep = 0;
+        let isSimulationRunning = false; // Tracks user intention to run
+
+        // --- Helper Functions ---
+
+        /**
+         * Converts UTC timestamp to the user's local timezone format.
+         */
+        function toLocalTime(utcTimestamp, timezone) {
+            try {
+                const date = new Date(utcTimestamp);
+                const options = { 
+                    timeZone: timezone, 
+                    hour: '2-digit', minute: '2-digit', second: '2-digit', 
+                    month: 'short', day: 'numeric', year: 'numeric' 
+                };
+                return date.toLocaleString('en-US', options);
+            } catch (e) {
+                return utcTimestamp; // Fallback
+            }
+        }
+
+        /**
+         * Shows a message in a custom modal instead of using alert().
+         */
+        function showMessage(message, type = 'info') {
+            const modal = document.getElementById('message-modal');
+            const messageText = document.getElementById('message-text');
+            const icon = document.getElementById('message-icon');
+            
+            messageText.textContent = message;
+            
+            let iconClass = '';
+            let bgColor = 'bg-blue-500';
+
+            if (type === 'error') {
+                iconClass = 'fas fa-exclamation-triangle';
+                bgColor = 'bg-red-600';
+            } else if (type === 'success') {
+                iconClass = 'fas fa-check-circle';
+                bgColor = 'bg-green-600';
+            } else {
+                iconClass = 'fas fa-info-circle';
+                bgColor = 'bg-blue-500';
+            }
+            
+            icon.className = `${iconClass} text-2xl`;
+            document.getElementById('modal-header').className = `p-4 ${bgColor} text-white rounded-t-lg flex items-center justify-between`;
+
+            modal.classList.remove('hidden');
+            setTimeout(() => { modal.classList.add('opacity-100'); }, 10);
+        }
+
+        function hideMessage() {
+            const modal = document.getElementById('message-modal');
+            modal.classList.remove('opacity-100');
+            setTimeout(() => { modal.classList.add('hidden'); }, 300);
+        }
+
+        // --- Real-Time Telemetry Logic ---
+        
+        /**
+         * Refactored function to fetch a block of telemetry data and start the interval.
+         */
+        async function fetchAndStartTelemetry() {
+            const altitude = document.getElementById('altitude-realtime').value;
+            const inclination = document.getElementById('inclination-realtime').value; // NEW: Get inclination
+            const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const runButton = document.getElementById('run-realtime-btn');
+
+            if (!isSimulationRunning) {
+                // This means the user manually stopped it while waiting for the next block
+                runButton.textContent = 'Run Real-Time Telemetry';
+                runButton.disabled = false;
+                document.getElementById('stop-realtime-btn').classList.add('hidden');
+                return;
+            }
+
+            runButton.textContent = 'Initializing...';
+            runButton.disabled = true;
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/telemetry`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        altitude_km: parseFloat(altitude),
+                        inclination_deg: parseFloat(inclination), // NEW: Pass inclination
+                        local_timezone: timezone 
+                        
+                    })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.message || 'Failed to fetch telemetry.');
+                }
+
+                const result = await response.json();
+                telemetryData = result.telemetry;
+                currentStep = 0; // Reset step count for the new block
+                
+                runButton.textContent = 'Simulation Running...';
+                runButton.disabled = false;
+                document.getElementById('stop-realtime-btn').classList.remove('hidden');
+
+                // Start the per-second update interval for the new block
+                simulationInterval = setInterval(() => {
+                    if (currentStep < telemetryData.length) {
+                        const data = telemetryData[currentStep];
+                        updateTelemetryDisplay(data);
+                        updateLog(data, timezone);
+                        currentStep++;
+                    } else {
+                        // Current block is finished. Check if simulation should continue.
+                        clearInterval(simulationInterval);
+                        if (isSimulationRunning) {
+                            // Recursively call to fetch the next block
+                            fetchAndStartTelemetry();
+                        } else {
+                            // Manual stop occurred right as the block finished
+                            stopSimulationCleanup();
+                        }
+                    }
+                }, 1000); // Update every 1 second
+
+            } catch (error) {
+                console.error("Simulation error:", error);
+                showMessage(`Error: ${error.message}`, 'error');
+                // Clean up UI on error
+                stopSimulationCleanup();
+            }
+        }
+        
+        /**
+         * Handles stopping the simulation and resetting UI.
+         */
+        function stopSimulationCleanup() {
+            clearInterval(simulationInterval);
+            isSimulationRunning = false;
+            document.getElementById('run-realtime-btn').textContent = 'Run Real-Time Telemetry';
+            document.getElementById('run-realtime-btn').disabled = false;
+            document.getElementById('stop-realtime-btn').classList.add('hidden');
+            showMessage('Real-Time Simulation Stopped.', 'info');
+        }
+
+
+        /**
+         * Toggles the real-time simulation state.
+         */
+        async function runRealtimeSimulation() {
+            if (isSimulationRunning) {
+                // Stop operation
+                isSimulationRunning = false; // Signal the interval/fetch to stop
+                stopSimulationCleanup();
+                return;
+            }
+
+            const altitude = document.getElementById('altitude-realtime').value;
+            const inclination = document.getElementById('inclination-realtime').value; // NEW: Get inclination
+
+            if (!altitude || !inclination) { // Validation includes inclination
+                showMessage('Please enter valid Altitude and Inclination.', 'error');
+                return;
+            }
+
+            // Start operation
+            clearInterval(simulationInterval);
+            telemetryData = [];
+            currentStep = 0;
+            document.getElementById('log-area').innerHTML = '<div class="text-gray-500 italic">Logs will appear here when simulation starts...</div>';
+            updateTelemetryDisplay({}); // Clear metrics display
+            
+            isSimulationRunning = true;
+            showMessage('Starting continuous Real-Time Simulation...', 'success');
+            
+            // Start the first block fetch
+            fetchAndStartTelemetry();
+        }
+
+        function stopRealtimeSimulation() {
+             runRealtimeSimulation(); // Uses the toggle logic
+        }
+
+        /**
+         * Updates the small metric cards with the latest telemetry step.
+         * @param {object} data - The current telemetry data point.
+         */
+        function updateTelemetryDisplay(data) {
+            const fallback = { value: '---', unit: '', color: 'text-gray-400' };
+
+            const metrics = [
+                { id: 'fsm-state', value: data.fsm_state || fallback.value, unit: '', color: data.fsm_state === 'NOMINAL' ? 'text-green-400' : 'text-yellow-400' },
+                { id: 'time-s', value: data.time_s !== undefined ? data.time_s.toFixed(0) : fallback.value, unit: 's', color: 'text-sky-400' },
+                { id: 'alt-km', value: data.altitude_km !== undefined ? data.altitude_km.toFixed(3) : fallback.value, unit: 'km', color: 'text-sky-400' },
+                { id: 'soc', value: data.soc !== undefined ? (data.soc * 100).toFixed(2) : fallback.value, unit: '%', color: data.soc > 0.6 ? 'text-green-400' : 'text-red-400' },
+                { id: 'batt-temp', value: data.battery_temp !== undefined ? data.battery_temp.toFixed(1) : fallback.value, unit: '°C', color: data.battery_temp < 35 ? 'text-green-400' : 'text-red-400' },
+                { id: 'solar-v', value: data.solar_voltage !== undefined ? data.solar_voltage.toFixed(2) : fallback.value, unit: 'V', color: 'text-yellow-400' },
+                { id: 'gps-err', value: data.gps_error_m !== undefined ? data.gps_error_m.toFixed(2) : fallback.value, unit: 'm', color: data.gps_error_m < 50 ? 'text-green-400' : 'text-red-400' },
+                { id: 'snr-db', value: data.SNR_dB !== undefined ? data.SNR_dB.toFixed(1) : fallback.value, unit: 'dB', color: data.SNR_dB > 15 ? 'text-green-400' : 'text-red-400' },
+            ];
+
+            metrics.forEach(metric => {
+                const element = document.getElementById(metric.id);
+                if (element) {
+                    element.innerHTML = `<span class="stat-value ${metric.color}">${metric.value}</span><span class="text-unit">${metric.unit}</span>`;
+                }
+            });
+        }
+
+        /**
+         * Appends a new entry to the detailed log area, formatted as a multi-line console output.
+         * ALIGNED EXACTLY TO THE PYTHON PRINT FORMAT.
+         */
+        function updateLog(data, timezone) {
+            const logArea = document.getElementById('log-area');
+            const localTime = toLocalTime(data.timestamp_utc, timezone);
+            
+            // Fallback for missing data
+            const F = '---';
+            
+            // Format Vector/Quaternion data
+            const magVecStr = data.mag_vec_measured ? data.mag_vec_measured.map(x => x.toExponential(2)).join(', ') : F;
+            const stQuatStr = data.st_quat ? data.st_quat.map(x => x.toFixed(3)).join(', ') : F;
+            
+            // Extract Epoch Time (last 5 characters of timestamp before 'Z')
+            const epochTime = data.timestamp_utc ? data.timestamp_utc.slice(-10, -5) : F;
+
+            const fsmColor = data.fsm_state === 'NOMINAL' ? 'text-green-400' : 'text-yellow-400';
+            
+            // Padding FSM state to 10 characters wide using spaces for fixed-width alignment
+            const fsmStatePadded = (data.fsm_state || F).padEnd(10, ' ');
+            
+            // Use non-breaking spaces for structural alignment (since white-space: pre is set)
+            const S = '&nbsp;'; 
+
+            // Construct the multi-line, console-style log entry
+            const logHTML = `
+                <div class="log-entry-mono text-xs text-gray-200">
+                    <!-- Line 1: Summary and FSM -->
+                    <div>
+                        <span class="text-sky-400">TIME: ${data.time_s !== undefined ? data.time_s.toString().padStart(3, '0') : F}s</span> | STATE: <span class="${fsmColor}">${fsmStatePadded}</span> | ALT: ${data.altitude_km !== undefined ? data.altitude_km.toFixed(3) : F} km | Epoch Time: ${epochTime}
+                    </div>
+
+                    <!-- Line 2a: Power Summary -->
+                    <div>
+                        ${S}${S}| POS | LON: <span class="text-yellow-300">${data.longitude_deg !== undefined ? (data.longitude_deg).toFixed(2) + '°Deg' : F}</span> | Lat: <span class="text-yellow-300"> ${data.latitude_deg !== undefined ? data.latitude_deg.toFixed(2) : F}°Deg 
+                    </div>
+                    <div>
+                        ${S}${S}| PWR | Batt V: ${data.battery_voltage !== undefined ? data.battery_voltage.toFixed(2) : F} V | Batt I: ${data.battery_current !== undefined ? data.battery_current.toFixed(2) : F} A | Solar I: ${data.solar_current !== undefined ? data.solar_current.toFixed(2) : F} A
+                    </div>
+
+                    <!-- Line 2b: Power Summary -->
+                    <div>
+                        ${S}${S}| PWR | SOC: <span class="text-yellow-300">${data.soc !== undefined ? (data.soc * 100).toFixed(2) + '%' : F}</span> | Temp: ${data.battery_temp !== undefined ? data.battery_temp.toFixed(2) : F}°C | Solar V: ${data.solar_voltage !== undefined ? data.solar_voltage.toFixed(2) : F} V
+                    </div>
+                    <div>
+                        ${S}${S}| PWR | Batt V: ${data.battery_voltage !== undefined ? data.battery_voltage.toFixed(2) : F} V | Batt I: ${data.battery_current !== undefined ? data.battery_current.toFixed(2) : F} A | Solar I: ${data.solar_current !== undefined ? data.solar_current.toFixed(2) : F} A
+                    </div>
+
+                    <!-- Line 3: ADCS Sensors -->
+                    <div>
+                        ${S}${S}| ADCS| GPS Error: ${data.gps_error_m !== undefined ? data.gps_error_m.toFixed(2) : F} m | Mag-Vec: [${magVecStr}]
+                    </div>
+                    <div>
+                        ${S}${S}| ADCS| Sun-Vec: [${data.sun_vec_measured ? data.sun_vec_measured[0].toFixed(2) : F}, ${data.sun_vec_measured ? data.sun_vec_measured[1].toFixed(2) : F}, ${data.sun_vec_measured ? data.sun_vec_measured[2].toFixed(2) : F}] | ST-Quat: [${stQuatStr}]
+                    </div>
+
+                    <!-- Line 4: Communication -->
+                    <div>
+                        ${S}${S}| COMM| Loss: ${data.PacketLoss !== undefined ? data.PacketLoss.toFixed(2) : F} | SNR: <span class="text-green-300">${data.SNR_dB !== undefined ? data.SNR_dB.toFixed(1) : F} dB</span> | Freq Offset: ${data.FrequencyOffset_Hz !== undefined ? data.FrequencyOffset_Hz.toFixed(1) : F} Hz
+                    </div>
+                    <div class="text-gray-500 mt-1 mb-2">${localTime} (Local)</div>
+                </div>
+                <div class="border-b border-gray-800"></div>
+            `;
+
+
+            const logEntry = document.createElement('div');
+            logEntry.className = 'py-2 px-1 hover:bg-gray-800 transition duration-150';
+            logEntry.innerHTML = logHTML;
+            
+            logArea.prepend(logEntry);
+            // Optionally limit log size (e.g., keep only the latest 100 entries)
+            while (logArea.children.length > 100) {
+                logArea.removeChild(logArea.lastChild);
+            }
+        }
+
+        // --- CSV Export Logic ---
+
+        /**
+         * Generates and downloads the CSV file.
+         */
+        async function generateCSV() {
+            const altitude = document.getElementById('altitude-csv').value;
+            const inclination = document.getElementById('inclination-csv').value; // NEW: Get inclination
+            const duration = document.getElementById('duration-csv').value;
+            const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const exportButton = document.getElementById('generate-csv-btn');
+
+            if (!altitude || !inclination || !duration || duration <= 0) { // Validation includes inclination
+                showMessage('Please enter valid Altitude, Inclination, and Duration (> 0).', 'error');
+                return;
+            }
+
+            exportButton.textContent = 'Generating...';
+            exportButton.disabled = true;
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/export-csv`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        altitude_km: parseFloat(altitude),
+                        inclination_deg: parseFloat(inclination), // NEW: Pass inclination
+                        duration_s: parseInt(duration),
+                        local_timezone: timezone
+                    })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.message || 'Failed to generate CSV.');
+                }
+                
+                // --- Handle CSV Download ---
+                const blob = await response.blob();
+                
+                // Get filename from Content-Disposition header (if available, fallback if not)
+                const contentDisposition = response.headers.get('Content-Disposition');
+                let filename = 'telemetry_export.csv';
+                if (contentDisposition) {
+                    const matches = /filename="([^"]+)"/.exec(contentDisposition);
+                    if (matches && matches[1]) {
+                        filename = matches[1];
+                    }
+                }
+                
+                // Create a temporary link element for download
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                a.remove();
+
+                showMessage(`CSV file '${filename}' downloaded successfully.`, 'success');
+
+            } catch (error) {
+                console.error("CSV export error:", error);
+                showMessage(`CSV Export Error: ${error.message}`, 'error');
+            } finally {
+                exportButton.textContent = 'Generate CSV & Download';
+                exportButton.disabled = false;
+            }
+        }
+
+        // --- UI Functions ---
+
+        /**
+         * Switches the active tab display.
+         * @param {string} tabName - 'realtime' or 'csv'.
+         */
+        function switchTab(tabName) {
+            // Hide all content and remove active class from all buttons
+            document.getElementById('realtime-content').classList.add('hidden');
+            document.getElementById('csv-content').classList.add('hidden');
+            document.getElementById('realtime-tab').classList.remove('active');
+            document.getElementById('csv-tab').classList.remove('active');
+
+            // Show selected content and add active class to selected button
+            document.getElementById(`${tabName}-content`).classList.remove('hidden');
+            document.getElementById(`${tabName}-tab`).classList.add('active');
+
+            // Stop simulation if switching away from real-time
+            if (tabName !== 'realtime' && isSimulationRunning) {
+                stopRealtimeSimulation();
+            }
+        }
+
+        // --- Initialization ---
+        document.addEventListener('DOMContentLoaded', () => {
+            // Set the local timezone display
+            const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            document.getElementById('local-timezone-display').textContent = timezone;
+
+            // Set the CSV duration default
+            document.getElementById('duration-csv').value = DEFAULT_REALTIME_DURATION_S;
+
+            // Initialize to the Real-Time tab
+            switchTab('realtime');
+        });
+    </script>
+</head>
+
+<body class="p-6 md:p-10 text-white min-h-screen">
+
+    <!-- Modal for Messages (Instead of alert()) -->
+    <div id="message-modal" class="fixed inset-0 z-50 bg-black bg-opacity-75 flex items-center justify-center opacity-0 transition-opacity duration-300 hidden" onclick="hideMessage()">
+        <div class="bg-gray-800 rounded-xl shadow-2xl overflow-hidden max-w-sm w-full transform transition-all duration-300 scale-100" onclick="event.stopPropagation()">
+            <div id="modal-header" class="p-4 bg-blue-500 text-white rounded-t-lg flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                    <i id="message-icon" class="fas fa-info-circle text-2xl"></i>
+                    <h3 class="text-lg font-semibold">Notification</h3>
+                </div>
+                <button onclick="hideMessage()" class="text-white hover:text-gray-200">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="p-6">
+                <p id="message-text" class="text-gray-300"></p>
+            </div>
+            <div class="p-4 bg-gray-700 flex justify-end">
+                <button onclick="hideMessage()" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition duration-200 shadow-md">Close</button>
+            </div>
+        </div>
+    </div>
+
+
+    <div class="max-w-7xl mx-auto">
+        <header class="mb-8">
+            <h1 class="text-4xl font-extrabold text-blue-400">SENTINODE X Simulator</h1>
+            <p class="text-gray-400 mt-2">Satellite Telemetry Simulation and Data Export Interface</p>
+        </header>
+
+        <!-- Tab Navigation -->
+        <div class="border-b border-gray-700 mb-8">
+            <nav class="flex space-x-4" role="tablist">
+                <button id="realtime-tab" onclick="switchTab('realtime')" class="tab-button active py-2 px-4 text-sm font-medium transition duration-200 focus:outline-none text-gray-400 hover:text-white" role="tab">
+                    Real-Time Telemetry
+                </button>
+                <button id="csv-tab" onclick="switchTab('csv')" class="tab-button py-2 px-4 text-sm font-medium transition duration-200 focus:outline-none text-gray-400 hover:text-white" role="tab">
+                    CSV Data Generator
+                </button>
+            </nav>
+        </div>
+
+        <!-- Tab Content -->
+
+        <!-- 1. Real-Time Telemetry Tab -->
+        <div id="realtime-content" class="space-y-8" role="tabpanel">
+            
+            <!-- Controls and Display -->
+            <div class="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
+                <h2 class="text-xl font-semibold mb-4 text-blue-300">Simulation Controls</h2>
+                <div class="flex flex-col md:flex-row space-y-4 md:space-y-0 md:space-x-6 items-center">
+                    <div class="w-full md:w-auto">
+                        <label for="altitude-realtime" class="block text-sm font-medium text-gray-400">Altitude (km)</label>
+                        <input type="number" id="altitude-realtime" value="600" min="500" class="mt-1 block w-full border-gray-600 rounded-lg shadow-sm bg-gray-700 text-white focus:ring-blue-500 focus:border-blue-500 p-2.5" placeholder="e.g., 600">
+                    </div>
+                    
+                    <!-- NEW: Inclination Input (Real-Time) -->
+                    <div class="w-full md:w-auto">
+                        <label for="inclination-realtime" class="block text-sm font-medium text-gray-400">Inclination (deg)</label>
+                        <input type="number" id="inclination-realtime" value="51.6" min="0" max="180" step="0.1" class="mt-1 block w-full border-gray-600 rounded-lg shadow-sm bg-gray-700 text-white focus:ring-blue-500 focus:border-blue-500 p-2.5" placeholder="e.g., 51.6">
+                    </div>
+
+                    <div class="w-full md:w-auto">
+                        <label class="block text-sm font-medium text-gray-400">Local Timezone</label>
+                        <div id="local-timezone-display" class="mt-1 block w-full p-2.5 text-sm text-gray-300 bg-gray-700 rounded-lg border border-gray-600 h-[42px] flex items-center"></div>
+                    </div>
+                    <div class="flex space-x-3 mt-auto w-full md:w-auto">
+                        <button id="run-realtime-btn" onclick="runRealtimeSimulation()" class="px-6 py-2.5 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 transition duration-200 w-full md:w-auto">
+                            Run Real-Time Telemetry
+                        </button>
+                        <button id="stop-realtime-btn" onclick="stopRealtimeSimulation()" class="px-6 py-2.5 bg-red-600 text-white font-semibold rounded-lg shadow-md hover:bg-red-700 transition duration-200 hidden w-full md:w-auto">
+                            Stop
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Metric Cards Display -->
+            <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                <!-- FSM State -->
+                <div class="metric-card bg-gray-800 p-4 rounded-xl shadow-md border border-gray-700 flex flex-col justify-between">
+                    <span class="text-xs font-medium text-gray-400 uppercase">FSM State</span>
+                    <div id="fsm-state" class="text-white pt-2">
+                        <span class="stat-value text-gray-400">---</span><span class="text-unit"></span>
+                    </div>
+                </div>
+                <!-- Mission Time -->
+                <div class="metric-card bg-gray-800 p-4 rounded-xl shadow-md border border-gray-700 flex flex-col justify-between">
+                    <span class="text-xs font-medium text-gray-400 uppercase">Mission Time</span>
+                    <div id="time-s" class="text-white pt-2">
+                        <span class="stat-value text-gray-400">---</span><span class="text-unit">s</span>
+                    </div>
+                </div>
+                <!-- Altitude -->
+                <div class="metric-card bg-gray-800 p-4 rounded-xl shadow-md border border-gray-700 flex flex-col justify-between">
+                    <span class="text-xs font-medium text-gray-400 uppercase">Altitude</span>
+                    <div id="alt-km" class="text-white pt-2">
+                        <span class="stat-value text-gray-400">---</span><span class="text-unit">km</span>
+                    </div>
+                </div>
+                <!-- SOC -->
+                <div class="metric-card bg-gray-800 p-4 rounded-xl shadow-md border border-gray-700 flex flex-col justify-between">
+                    <span class="text-xs font-medium text-gray-400 uppercase">Battery SOC</span>
+                    <div id="soc" class="text-white pt-2">
+                        <span class="stat-value text-gray-400">---</span><span class="text-unit">%</span>
+                    </div>
+                </div>
+                <!-- Battery Temp -->
+                <div class="metric-card bg-gray-800 p-4 rounded-xl shadow-md border border-gray-700 flex flex-col justify-between">
+                    <span class="text-xs font-medium text-gray-400 uppercase">Battery Temp</span>
+                    <div id="batt-temp" class="text-white pt-2">
+                        <span class="stat-value text-gray-400">---</span><span class="text-unit">°C</span>
+                    </div>
+                </div>
+                <!-- Solar Voltage -->
+                <div class="metric-card bg-gray-800 p-4 rounded-xl shadow-md border border-gray-700 flex flex-col justify-between">
+                    <span class="text-xs font-medium text-gray-400 uppercase">Solar Voltage</span>
+                    <div id="solar-v" class="text-white pt-2">
+                        <span class="stat-value text-gray-400">---</span><span class="text-unit">V</span>
+                    </div>
+                </div>
+                <!-- GPS Error -->
+                <div class="metric-card bg-gray-800 p-4 rounded-xl shadow-md border border-gray-700 flex flex-col justify-between">
+                    <span class="text-xs font-medium text-gray-400 uppercase">GPS Error</span>
+                    <div id="gps-err" class="text-white pt-2">
+                        <span class="stat-value text-gray-400">---</span><span class="text-unit">m</span>
+                    </div>
+                </div>
+                <!-- Comm SNR -->
+                <div class="metric-card bg-gray-800 p-4 rounded-xl shadow-md border border-gray-700 flex flex-col justify-between">
+                    <span class="text-xs font-medium text-gray-400 uppercase">SNR</span>
+                    <div id="snr-db" class="text-white pt-2">
+                        <span class="stat-value text-gray-400">---</span><span class="text-unit">dB</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Detailed Log Area -->
+            <div>
+                <h2 class="text-xl font-semibold mb-3 text-blue-300 mt-6">Telemetry Log (Real-Time Feed)</h2>
+                <div id="log-area" class="bg-gray-900 p-4 rounded-xl shadow-inner border border-gray-700 h-96 overflow-y-auto flex flex-col-reverse">
+                    <div class="text-gray-500 italic">Logs will appear here when simulation starts...</div>
+                </div>
+            </div>
+        </div>
+
+
+        <!-- 2. CSV Data Generator Tab -->
+        <div id="csv-content" class="hidden space-y-6" role="tabpanel">
+            <div class="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
+                <h2 class="text-xl font-semibold mb-4 text-blue-300">Generate CSV Export</h2>
+                <p class="text-gray-400 mb-6">Define simulation parameters to generate a full telemetry log and download it as a CSV file.</p>
+                
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+                    <!-- Altitude Input -->
+                    <div>
+                        <label for="altitude-csv" class="block text-sm font-medium text-gray-400">Altitude (km)</label>
+                        <input type="number" id="altitude-csv" value="600" min="500" class="mt-1 block w-full border-gray-600 rounded-lg shadow-sm bg-gray-700 text-white focus:ring-blue-500 focus:border-blue-500 p-2.5" placeholder="e.g., 600">
+                    </div>
+                    
+                    <!-- NEW: Inclination Input (CSV) -->
+                    <div>
+                        <label for="inclination-csv" class="block text-sm font-medium text-gray-400">Inclination (deg)</label>
+                        <input type="number" id="inclination-csv" value="51.6" min="0" max="180" step="0.1" class="mt-1 block w-full border-gray-600 rounded-lg shadow-sm bg-gray-700 text-white focus:ring-blue-500 focus:border-blue-500 p-2.5" placeholder="e.g., 51.6">
+                    </div>
+                    
+                    <!-- Duration Input -->
+                    <div>
+                        <label for="duration-csv" class="block text-sm font-medium text-gray-400">Duration (seconds)</label>
+                        <input type="number" id="duration-csv" value="60" min="1" class="mt-1 block w-full border-gray-600 rounded-lg shadow-sm bg-gray-700 text-white focus:ring-blue-500 focus:border-blue-500 p-2.5" placeholder="e.g., 60">
+                    </div>
+                    <!-- Timezone Display -->
+                    <div>
+                        <label class="block text-sm font-medium text-gray-400">Local Timezone</label>
+                        <div class="mt-1 block w-full p-2.5 text-sm text-gray-300 bg-gray-700 rounded-lg border border-gray-600 h-[42px] flex items-center" id="local-timezone-csv-display">
+                            <script>
+                                // Since DOMContentLoaded already ran, we can set this immediately
+                                document.addEventListener('DOMContentLoaded', () => {
+                                    document.getElementById('local-timezone-csv-display').textContent = Intl.DateTimeFormat().resolvedOptions().timeZone;
+                                });
+                                document.write(Intl.DateTimeFormat().resolvedOptions().timeZone); // Fallback for immediate rendering
+                            </script>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-8 flex justify-end">
+                    <button id="generate-csv-btn" onclick="generateCSV()" class="px-8 py-3 bg-green-600 text-white font-bold rounded-lg shadow-lg hover:bg-green-700 transition duration-200">
+                        Generate CSV & Download
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer Section -->
+    <footer class="mt-12 py-4 text-center text-gray-500 text-sm border-t border-gray-700 max-w-7xl mx-auto w-full">
+        <p>
+            &copy; <span id="current-year"></span> All rights reserved. | Developed by 
+            <a href="https://www.linkedin.com/in/deshad-senevirathne/" target="_blank" class="text-blue-400 font-medium hover:text-blue-300 transition duration-150">Deshad Senevirathne</a>
+        </p>
+    </footer>
+    
+    <!-- Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+</body>
+</html>

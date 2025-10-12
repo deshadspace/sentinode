@@ -1,0 +1,32 @@
+# Dockerfile.python
+
+# Use a specific, slim Python base image
+FROM python:3.10-slim
+
+# Set the working directory inside the container for the application code
+WORKDIR /app
+
+# --- FIX 1: Install Git (and clean up) to support the git+ URL dependency ---
+# apt-get update refreshes the package list
+# git is the tool required by pip to clone the repository
+RUN apt-get update && \
+    apt-get install -y git && \
+    rm -rf /var/lib/apt/lists/*
+
+# --- FIX 2: Copy the requirements file from the project root (../) ---
+# NOTE: The build context is the root of the 'python-sim-service' folder.
+# We copy the requirements.txt from the parent directory (../) to the current 
+# working directory inside the container (./app).
+COPY ../requirements.txt .
+
+# Install Python dependencies.
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy all the application code into the container's working directory (/app).
+COPY . .
+
+# Expose the internal port 
+EXPOSE 5000
+
+# Command to run the FastAPI server when the container starts
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5000"]

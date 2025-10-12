@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+
+  # 1. Python Simulation Service (Backend)
+
+  python-sim-service:
+    build:
+      context: ./python-sim-service
+      dockerfile: Dockerfile.python
+    container_name: python_sim_core
+    # Ports are mapped for debugging, but only the node service uses the internal 5000
+    ports:
+      - "5000:5000" 
+    restart: always
+    networks:
+      - sentinode_net
+
+
+  # 2. Node.js API Gateway (Frontend API)
+
+  node-api-gateway:
+    build:
+      context: ./node-api-gateway
+      dockerfile: Dockerfile.node
+    container_name: node_gateway
+    # The external access point for the front-end
+    ports:
+      - "3001:3001" 
+    depends_on:
+      - python-sim-service
+    restart: always
+    networks:
+      - sentinode_net
+
+# Define the shared network
+networks:
+  sentinode_net:
+    driver: bridge
