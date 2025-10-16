@@ -6,9 +6,9 @@ const PORT = 3001;
 
 // --- Configuration Constants ---
 // We use localhost:5001 because the Python service is running natively on port 5001.
-const PYTHON_BASE_URL = 'http://localhost:5001';
+const PYTHON_BASE_URL = 'http://python-sim-service:5001';
 const PYTHON_SIM_URL = `${PYTHON_BASE_URL}/run-simulation`;
-const DEFAULT_REALTIME_DURATION_S = 86400; // Default duration for the 'real-time' view
+const DEFAULT_REALTIME_DURATION_S = 600; // Default duration for the 'real-time' view
 const DEFAULT_INCLINATION_DEG = 51.6; // Matches the Python simulator default (e.g., ISS)
 
 // --- Utility: JSON to CSV Converter ---
@@ -100,6 +100,8 @@ app.post('/api/telemetry', async (req, res) => {
             altitude_km: parseFloat(altitude_km),
             inclination_deg: parseFloat(inclination_deg), // NEW: Pass inclination
             duration_s: parseInt(duration_s)
+	},{
+	    timeout: 60000 //timeoutset
         });
 
         // Send the result from the Python service back to the client
@@ -145,6 +147,8 @@ app.post('/api/export-csv', async (req, res) => {
             altitude_km: parseFloat(altitude_km),
             inclination_deg: parseFloat(inclination_deg), // NEW: Pass inclination
             duration_s: parseInt(duration_s)
+	},{
+            timeout: 60000 //timeoutset
         });
 
         const telemetryData = pythonResponse.data.telemetry;
@@ -178,5 +182,5 @@ app.post('/api/export-csv', async (req, res) => {
 
 // --- Server Listen ---
 app.listen(PORT, () => {
-    console.log(`[Gateway] Server running on http://localhost:${PORT}`);
+    console.log(`[Gateway] Server running on http://python-sim-service:${PORT}`);
 });

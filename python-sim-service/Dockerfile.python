@@ -17,7 +17,7 @@ RUN apt-get update && \
 # NOTE: The build context is the root of the 'python-sim-service' folder.
 # We copy the requirements.txt from the parent directory (../) to the current 
 # working directory inside the container (./app).
-COPY ../requirements.txt .
+COPY requirements.txt .
 
 # Install Python dependencies.
 RUN pip install --no-cache-dir -r requirements.txt

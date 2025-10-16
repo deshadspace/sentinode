@@ -1,6 +1,6 @@
 // frontend/app.js
 
-const GATEWAY_URL = 'http://localhost:3001/api/telemetry';
+const GATEWAY_URL = '/api/telemetry';
 
 async function runSimulation() {
     const altitude = document.getElementById('altitude').value;
