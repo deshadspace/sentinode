@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
 
   # 1. Python Simulation Service (Backend)
@@ -33,7 +31,22 @@ services:
     networks:
       - sentinode_net
 
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: frontend_web
+    ports:
+      - "80:80"
+    depends_on:
+      - node-api-gateway
+    networks:
+      - sentinode_net
+
+
 # Define the shared network
 networks:
   sentinode_net:
     driver: bridge
+
+
